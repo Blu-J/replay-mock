@@ -1,8 +1,4 @@
-use std::{
-    fs::File,
-    io::Write,
-    sync::{Arc, Mutex},
-};
+use std::{fs::File, io::Write, sync::Mutex};
 
 use async_trait::async_trait;
 use bytes::buf::BufExt;

@@ -31,3 +31,11 @@ pub struct Replay {
     pub when: Request,
     pub then: Value,
 }
+
+impl Replay {
+    pub fn matches_request(&self, request: &Request) -> bool {
+        self.when.path == request.path
+            && self.when.method == request.method
+            && assert_json_diff::assert_json_eq_no_panic(&self.when.body, &request.body).is_ok()
+    }
+}

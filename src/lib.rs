@@ -146,19 +146,19 @@ impl MockServer {
 
 #[cfg(test)]
 mod tests {
-    use crate::{mocks::Gateway, MockServer};
+    use crate::{mocks::Gateway, mocks::ReplayMock, MockServer};
     use hyper::Client;
     use serde_json::{json, Value};
     use tokio::{self};
 
     #[tokio::test]
-    async fn simple_proxy() {
+    async fn capture_and_replay() {
         let mock = MockServer::new()
             .await
             .mock(Gateway::new_replay(
                 "",
                 "https://cat-fact.herokuapp.com",
-                "test.json",
+                "/tmp/test.json",
             ))
             .await;
         let url = format!("http://{}/facts", mock.address);
@@ -170,10 +170,28 @@ mod tests {
             .await
             .expect("Valid get");
 
-        let body: Value =
+        let body_one: Value =
             serde_json::from_slice(&hyper::body::to_bytes(res).await.expect("as bytes"))
                 .expect("Serde");
 
-        assert_eq!(body, json!(null));
+        assert_ne!(body_one, json!(null));
+
+        let mock = MockServer::new()
+            .await
+            .mock(ReplayMock::from_file("/tmp/test.json"))
+            .await;
+        let url = format!("http://{}/facts", mock.address);
+
+        let client = Client::new();
+
+        let res = client
+            .get(url.parse().expect("valid url"))
+            .await
+            .expect("Valid get");
+        let body_two: Value =
+            serde_json::from_slice(&hyper::body::to_bytes(res).await.expect("as bytes"))
+                .expect("Serde");
+
+        assert_eq!(body_one, body_two);
     }
 }
