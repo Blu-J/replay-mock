@@ -146,7 +146,7 @@ impl MockServer {
 
 #[cfg(test)]
 mod tests {
-    use crate::{mocks, MockServer};
+    use crate::{mocks::Gateway, MockServer};
     use hyper::Client;
     use serde_json::{json, Value};
     use tokio::{self};
@@ -155,12 +155,13 @@ mod tests {
     async fn simple_proxy() {
         let mock = MockServer::new()
             .await
-            .mock(Box::new(mocks::Gateway {
-                path: "/facts".to_string(),
-                uri: "https://cat-fact.herokuapp.com/facts".to_string(),
-            }))
+            .mock(Gateway::new_replay(
+                "",
+                "https://cat-fact.herokuapp.com",
+                "test.json",
+            ))
             .await;
-        let url = dbg!(format!("http://{}/facts", mock.address));
+        let url = format!("http://{}/facts", mock.address);
 
         let client = Client::new();
 
@@ -169,14 +170,10 @@ mod tests {
             .await
             .expect("Valid get");
 
-        // And then, if the request gets a response...
-        println!("status: {}", res.status());
-
-        // Concatenate the body stream into a single buffer...
         let body: Value =
             serde_json::from_slice(&hyper::body::to_bytes(res).await.expect("as bytes"))
                 .expect("Serde");
 
-        assert_ne!(body, json!(null));
+        assert_eq!(body, json!(null));
     }
 }

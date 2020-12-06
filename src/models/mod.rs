@@ -1,6 +1,7 @@
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Method {
     Post,
     Put,
@@ -18,9 +19,15 @@ impl Method {
         }
     }
 }
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Request {
     pub path: String,
     pub method: Method,
     pub body: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Replay {
+    pub when: Request,
+    pub then: Value,
 }
