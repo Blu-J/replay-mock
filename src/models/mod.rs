@@ -7,6 +7,17 @@ pub enum Method {
     Get,
     Delete,
 }
+
+impl Method {
+    pub fn as_method_string(&self) -> String {
+        match self {
+            Method::Post => "POST".to_string(),
+            Method::Put => "PUT".to_string(),
+            Method::Get => "GET".to_string(),
+            Method::Delete => "DELETE".to_string(),
+        }
+    }
+}
 #[derive(Debug, Clone, PartialEq)]
 pub struct Request {
     pub path: String,

@@ -138,21 +138,28 @@ impl MockServer {
         }
     }
 
-    pub async fn mock(&mut self, mock: RunMock) {
+    pub async fn mock(self, mock: RunMock) -> Self {
         self.mocks.lock().await.push(mock);
+        self
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::MockServer;
+    use crate::{mocks, MockServer};
     use hyper::Client;
     use serde_json::{json, Value};
     use tokio::{self};
 
     #[tokio::test]
-    async fn it_works() {
-        let mock = MockServer::new().await;
+    async fn simple_proxy() {
+        let mock = MockServer::new()
+            .await
+            .mock(Box::new(mocks::Gateway {
+                path: "/facts".to_string(),
+                uri: "https://cat-fact.herokuapp.com/facts".to_string(),
+            }))
+            .await;
         let url = dbg!(format!("http://{}/facts", mock.address));
 
         let client = Client::new();
@@ -170,6 +177,6 @@ mod tests {
             serde_json::from_slice(&hyper::body::to_bytes(res).await.expect("as bytes"))
                 .expect("Serde");
 
-        assert_eq!(body, json!({}));
+        assert_ne!(body, json!(null));
     }
 }
