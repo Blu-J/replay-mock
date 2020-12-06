@@ -1,34 +1,110 @@
-use std::{cell::Cell, net::SocketAddr, net::UdpSocket, sync::Arc};
+use std::{mem::replace, net::SocketAddr, sync::Arc};
 
-use async_trait::async_trait;
 use futures::channel::oneshot;
-use futures::{lock::Mutex, TryStreamExt};
+use futures::lock::Mutex;
 pub use hyper;
-use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Method, Request, Response, Server, StatusCode};
+use hyper::{
+    header, http,
+    service::{make_service_fn, service_fn},
+};
+use hyper::{Body, Method as HyperMethod, Request, Response, Server, StatusCode};
+use models::Method;
+use serde_json::Value;
 
-type Mocks = Arc<Mutex<Vec<Box<dyn RunMock + Send + Sync>>>>;
+pub mod mocks;
+pub mod models;
+
+type RunMock = Box<dyn mocks::RunMock + Send + Sync>;
+
+type Mocks = Arc<Mutex<Vec<RunMock>>>;
 
 pub struct MockServer {
     pub mocks: Mocks,
     pub address: SocketAddr,
-    kill: oneshot::Sender<()>,
+    kill: Option<oneshot::Sender<()>>,
 }
 async fn router(mocks: Mocks, req: Request<Body>) -> Result<Response<Body>, hyper::Error> {
+    let path = match req.uri().path_and_query() {
+        Some(path_query) => format!("{}", path_query),
+        _ => return Ok(not_found()),
+    };
+    let method = match req.method() {
+        &HyperMethod::POST => Method::Post,
+        &HyperMethod::PUT => Method::Put,
+        &HyperMethod::GET => Method::Get,
+        &HyperMethod::DELETE => Method::Delete,
+        _ => return Ok(not_found()),
+    };
+    let whole_body = hyper::body::to_bytes(req.into_body()).await?;
+    let body = if whole_body.is_empty() {
+        Value::Null
+    } else {
+        match serde_json::from_slice(&whole_body) {
+            Ok(body) => body,
+            Err(_err) => {
+                return Ok(bad_request(format!(
+                    "Can't parse {:?} as valid json",
+                    whole_body
+                )))
+            }
+        }
+    };
+    let request = models::Request { method, path, body };
     for mock in mocks.lock().await.iter() {
-        let mock_result = mock.run_mock(&req).await?;
+        let mock_result = mock.run_mock(&request).await;
         if let Some(result) = mock_result {
-            return Ok(result);
+            let body = match serde_json::to_string(&result) {
+                Ok(a) => a,
+                Err(_err) => {
+                    return Ok(internal_error(format!(
+                        "Can't convert {:?} into bytes",
+                        result
+                    )))
+                }
+            };
+            return Ok(Response::builder()
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .unwrap());
         }
     }
+    Ok(not_found())
+}
 
+fn not_found() -> Response<Body> {
     let mut not_found = Response::default();
     *not_found.status_mut() = StatusCode::NOT_FOUND;
-    Ok(not_found)
+    not_found
+}
+fn bad_request(message: String) -> Response<Body> {
+    let body = serde_json::to_string(&message).unwrap();
+    Response::builder()
+        .header(header::CONTENT_TYPE, "application/json")
+        .status(http::StatusCode::BAD_REQUEST)
+        .body(Body::from(body))
+        .unwrap()
+}
+fn internal_error(message: String) -> Response<Body> {
+    let body = serde_json::to_string(&message).unwrap();
+    Response::builder()
+        .header(header::CONTENT_TYPE, "application/json")
+        .status(http::StatusCode::INTERNAL_SERVER_ERROR)
+        .body(Body::from(body))
+        .unwrap()
+}
+
+impl Drop for MockServer {
+    fn drop(&mut self) {
+        let kill = replace(&mut self.kill, None);
+        if let Some(kill) = kill {
+            kill.send(())
+                .expect("Sending kill signal for cleanup of mock server");
+        }
+    }
 }
 
 impl MockServer {
-    async fn new() -> MockServer {
+    pub async fn new() -> MockServer {
         let addr: SocketAddr = ([0, 0, 0, 0], 0).into();
         let mocks: Mocks = Default::default();
 
@@ -58,21 +134,13 @@ impl MockServer {
         MockServer {
             mocks,
             address: address_receiver.await.unwrap(),
-            kill: s,
+            kill: Some(s),
         }
     }
 
-    async fn mock(&mut self, mock: Box<dyn RunMock + Sync + Send>) {
+    pub async fn mock(&mut self, mock: RunMock) {
         self.mocks.lock().await.push(mock);
     }
-}
-
-#[async_trait]
-pub trait RunMock {
-    async fn run_mock(
-        &self,
-        request: &Request<Body>,
-    ) -> Result<Option<Response<Body>>, hyper::Error>;
 }
 
 #[cfg(test)]
@@ -101,7 +169,6 @@ mod tests {
         let body: Value =
             serde_json::from_slice(&hyper::body::to_bytes(res).await.expect("as bytes"))
                 .expect("Serde");
-        mock.kill.send(()).unwrap();
 
         assert_eq!(body, json!({}));
     }
