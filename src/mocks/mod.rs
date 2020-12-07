@@ -3,10 +3,12 @@ use serde_json::Value;
 
 use crate::models::Request;
 mod closure;
+mod factory_closure;
 mod gateway;
 mod replay;
 
 pub use closure::*;
+pub use factory_closure::*;
 pub use gateway::*;
 pub use replay::*;
 #[async_trait]

@@ -24,7 +24,7 @@ pub mod models;
 
 type RunMock = Box<dyn mocks::RunMock + Send + Sync>;
 
-type Mocks = Arc<Mutex<Vec<RunMock>>>;
+type Mocks = Arc<Mutex<Vec<Arc<RunMock>>>>;
 
 /// Mock Server is the main piece, this will start a server on a random port
 /// and we can get the port and url. We then can modify behaviour with the mocks.
@@ -61,7 +61,8 @@ async fn router(mocks: Mocks, req: Request<Body>) -> Result<Response<Body>, hype
         }
     };
     let request = models::Request { method, path, body };
-    for mock in mocks.lock().await.iter() {
+    let mocks = mocks.lock().await.clone();
+    for mock in mocks.iter() {
         let mock_result = mock.run_mock(&request).await;
         if let Some(result) = mock_result {
             let body = match serde_json::to_string(&result) {
@@ -152,23 +153,27 @@ impl MockServer {
 
     /// Use this to change the behaviour of the server, adding in a replay.
     pub async fn mock(self, mock: RunMock) -> Self {
-        self.mocks.lock().await.push(mock);
+        self.mocks.lock().await.push(Arc::new(mock));
         self
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::fs::remove_file;
+    use std::{fs::remove_file, time::Instant};
 
     use crate::{
         mocks::Gateway,
-        mocks::{ClosureMock, ReplayMock},
+        mocks::{ClosureMock, FactoryClosure, ReplayMock},
         MockServer,
+    };
+    use futures::{
+        channel::{mpsc, oneshot},
+        SinkExt, StreamExt,
     };
     use hyper::Client;
     use serde_json::{json, Value};
-    use tokio::{self};
+    use tokio::{self, task};
 
     #[tokio::test]
     async fn capture_and_replay() {
@@ -234,5 +239,79 @@ mod tests {
                 .expect("Serde");
 
         assert_eq!(body_one, json!("Good"));
+    }
+
+    #[tokio::test]
+    async fn async_test() {
+        let (send_one, mut rec_one) = mpsc::channel::<oneshot::Sender<Value>>(1);
+        let (send_two, mut rec_two) = mpsc::channel::<oneshot::Sender<Value>>(1);
+        let mock = MockServer::new()
+            .await
+            .mock(FactoryClosure::new(move || {
+                let mut send_one = send_one.clone();
+                |req| async move {
+                    if &req.path == "/one" {
+                        let (send, rec) = oneshot::channel::<Value>();
+                        send_one.send(send).await.unwrap();
+                        let value = rec.await.unwrap();
+                        return Some(value);
+                    }
+                    None
+                }
+            }))
+            .await
+            .mock(FactoryClosure::new(move || {
+                let mut send_two = send_two.clone();
+                |req| async move {
+                    if &req.path == "/two" {
+                        let (send, rec) = oneshot::channel::<Value>();
+                        send_two.send(send).await.unwrap();
+                        let value = rec.await.unwrap();
+                        return Some(value);
+                    }
+                    None
+                }
+            }))
+            .await;
+        let address = mock.address.clone();
+        let body_one = task::spawn(async move {
+            let url = format!("http://{}/one", address);
+
+            let client = Client::new();
+
+            let res = client
+                .get(url.parse().expect("valid url"))
+                .await
+                .expect("Valid get");
+            let body: Value =
+                serde_json::from_slice(&hyper::body::to_bytes(res).await.expect("as bytes"))
+                    .expect("Serde");
+
+            assert_eq!(body, json!("one"));
+            Instant::now()
+        });
+        let address = mock.address.clone();
+        let body_two = task::spawn(async move {
+            let url = format!("http://{}/two", address);
+
+            let client = Client::new();
+
+            let res = client
+                .get(url.parse().expect("valid url"))
+                .await
+                .expect("Valid get");
+
+            let body: Value =
+                serde_json::from_slice(&hyper::body::to_bytes(res).await.expect("as bytes"))
+                    .expect("Serde");
+
+            assert_eq!(body, json!("two"));
+            Instant::now()
+        });
+
+        rec_two.next().await.unwrap().send(json!("two")).unwrap();
+        rec_one.next().await.unwrap().send(json!("one")).unwrap();
+
+        assert!(body_one.await.unwrap() > body_two.await.unwrap());
     }
 }

@@ -10,11 +10,11 @@ use super::RunMock;
 /// can use a simple closure.
 pub struct ClosureMock<
     T: Future<Output = Option<Value>> + Sync + Send,
-    F: Fn(&Request) -> T + Sync + Send,
+    F: Fn(Request) -> T + Sync + Send,
 > {
     closure: F,
 }
-impl<T: Future<Output = Option<Value>> + Sync + Send, F: Fn(&Request) -> T + Sync + Send>
+impl<T: Future<Output = Option<Value>> + Sync + Send, F: Fn(Request) -> T + Sync + Send>
     ClosureMock<T, F>
 {
     ///
@@ -23,11 +23,11 @@ impl<T: Future<Output = Option<Value>> + Sync + Send, F: Fn(&Request) -> T + Syn
     }
 }
 #[async_trait]
-impl<T: Future<Output = Option<Value>> + Sync + Send, F: Fn(&Request) -> T + Sync + Send> RunMock
+impl<T: Future<Output = Option<Value>> + Sync + Send, F: Fn(Request) -> T + Sync + Send> RunMock
     for ClosureMock<T, F>
 {
     async fn run_mock(&self, request: &Request) -> Option<Value> {
-        let response = (self.closure)(request).await;
+        let response = (self.closure)(request.clone()).await;
         Some(response?)
     }
 }
