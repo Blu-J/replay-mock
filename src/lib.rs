@@ -1,3 +1,6 @@
+#![deny(missing_docs, warnings)]
+//! ### Purpose
+//! We want to to capture a proxy, and replay, and even pass it through if needed.
 use std::{mem::replace, net::SocketAddr, sync::Arc};
 
 use futures::channel::oneshot;
@@ -11,15 +14,23 @@ use hyper::{Body, Method as HyperMethod, Request, Response, Server, StatusCode};
 use models::Method;
 use serde_json::Value;
 
+/// Mocks are the ways that we can create route mocking
+/// There are usefull tools like gateway, which is a proxy
+/// and replay that can replay a json
 pub mod mocks;
+/// Models are the abstraction so that way we can simplify the types
+/// to the closure mock, and abstract out to any implmentation.
 pub mod models;
 
 type RunMock = Box<dyn mocks::RunMock + Send + Sync>;
 
 type Mocks = Arc<Mutex<Vec<RunMock>>>;
 
+/// Mock Server is the main piece, this will start a server on a random port
+/// and we can get the port and url. We then can modify behaviour with the mocks.
 pub struct MockServer {
-    pub mocks: Mocks,
+    mocks: Mocks,
+    /// Address where the server is hosting.
     pub address: SocketAddr,
     kill: Option<oneshot::Sender<()>>,
 }
@@ -104,6 +115,7 @@ impl Drop for MockServer {
 }
 
 impl MockServer {
+    /// Notes: Creating a on a random port
     pub async fn new() -> MockServer {
         let addr: SocketAddr = ([0, 0, 0, 0], 0).into();
         let mocks: Mocks = Default::default();
@@ -138,6 +150,7 @@ impl MockServer {
         }
     }
 
+    /// Use this to change the behaviour of the server, adding in a replay.
     pub async fn mock(self, mock: RunMock) -> Self {
         self.mocks.lock().await.push(mock);
         self
@@ -146,20 +159,66 @@ impl MockServer {
 
 #[cfg(test)]
 mod tests {
-    use crate::{mocks::Gateway, mocks::ReplayMock, MockServer};
+    use std::fs::remove_file;
+
+    use crate::{
+        mocks::Gateway,
+        mocks::{ClosureMock, ReplayMock},
+        MockServer,
+    };
     use hyper::Client;
     use serde_json::{json, Value};
     use tokio::{self};
 
     #[tokio::test]
     async fn capture_and_replay() {
+        let file_path = "testingTemp/test.json";
+        let client = Client::new();
+        let body_one: Value = {
+            let mock = MockServer::new()
+                .await
+                .mock(Gateway::new_replay(
+                    "",
+                    "https://cat-fact.herokuapp.com",
+                    file_path,
+                ))
+                .await;
+            let url = format!("http://{}/facts", mock.address);
+
+            let res = client
+                .get(url.parse().expect("valid url"))
+                .await
+                .expect("Valid get");
+            serde_json::from_slice(&hyper::body::to_bytes(res).await.expect("as bytes"))
+                .expect("Serde")
+        };
+
+        assert_ne!(body_one, json!(null));
+
+        let body_two: Value = {
+            let mock = MockServer::new()
+                .await
+                .mock(ReplayMock::from_file(file_path))
+                .await;
+            let url = format!("http://{}/facts", mock.address);
+
+            let res = client
+                .get(url.parse().expect("valid url"))
+                .await
+                .expect("Valid get");
+            serde_json::from_slice(&hyper::body::to_bytes(res).await.expect("as bytes"))
+                .expect("Serde")
+        };
+
+        assert_eq!(body_one, body_two);
+        remove_file(file_path).expect("Remove the file for the testing");
+    }
+
+    #[tokio::test]
+    async fn closure_test() {
         let mock = MockServer::new()
             .await
-            .mock(Gateway::new_replay(
-                "",
-                "https://cat-fact.herokuapp.com",
-                "/tmp/test.json",
-            ))
+            .mock(ClosureMock::new(|_req| async { Some(json!("Good")) }))
             .await;
         let url = format!("http://{}/facts", mock.address);
 
@@ -174,24 +233,6 @@ mod tests {
             serde_json::from_slice(&hyper::body::to_bytes(res).await.expect("as bytes"))
                 .expect("Serde");
 
-        assert_ne!(body_one, json!(null));
-
-        let mock = MockServer::new()
-            .await
-            .mock(ReplayMock::from_file("/tmp/test.json"))
-            .await;
-        let url = format!("http://{}/facts", mock.address);
-
-        let client = Client::new();
-
-        let res = client
-            .get(url.parse().expect("valid url"))
-            .await
-            .expect("Valid get");
-        let body_two: Value =
-            serde_json::from_slice(&hyper::body::to_bytes(res).await.expect("as bytes"))
-                .expect("Serde");
-
-        assert_eq!(body_one, body_two);
+        assert_eq!(body_one, json!("Good"));
     }
 }

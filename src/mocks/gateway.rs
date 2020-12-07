@@ -9,6 +9,9 @@ use crate::models::{Replay, Request};
 
 use super::RunMock;
 
+/// Gateway is a proxy to another server. And when we get a response,
+/// We capture that in a value, so if we have a file name on deletion we create a replay
+/// for the replay mock
 pub struct Gateway {
     path: String,
     uri: String,
@@ -16,6 +19,7 @@ pub struct Gateway {
     replays: Mutex<Vec<Replay>>,
 }
 impl Gateway {
+    /// Create a simple proxy server
     pub fn new(path: &str, uri: &str) -> Box<Self> {
         Box::new(Self {
             path: path.to_string(),
@@ -24,6 +28,7 @@ impl Gateway {
             replays: Default::default(),
         })
     }
+    /// Create a proxy server that on death will create a replay file
     pub fn new_replay(path: &str, uri: &str, file: &str) -> Box<Self> {
         Box::new(Self {
             path: path.to_string(),

@@ -6,6 +6,8 @@ use crate::models::Request;
 
 use super::RunMock;
 
+/// For when we want to make a custom matcher for the mocking, we
+/// can use a simple closure.
 pub struct ClosureMock<
     T: Future<Output = Option<Value>> + Sync + Send,
     F: Fn(&Request) -> T + Sync + Send,
@@ -15,6 +17,7 @@ pub struct ClosureMock<
 impl<T: Future<Output = Option<Value>> + Sync + Send, F: Fn(&Request) -> T + Sync + Send>
     ClosureMock<T, F>
 {
+    ///
     pub fn new(closure: F) -> Box<ClosureMock<T, F>> {
         Box::new(Self { closure: closure })
     }
