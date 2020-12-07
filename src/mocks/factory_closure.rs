@@ -22,7 +22,7 @@ impl<
 {
     ///
     pub fn new(closure: F) -> Box<FactoryClosure<T, F, R>> {
-        Box::new(Self { closure: closure })
+        Box::new(Self { closure })
     }
 }
 #[async_trait]

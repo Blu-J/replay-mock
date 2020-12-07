@@ -39,11 +39,11 @@ async fn router(mocks: Mocks, req: Request<Body>) -> Result<Response<Body>, hype
         Some(path_query) => format!("{}", path_query),
         _ => return Ok(not_found()),
     };
-    let method = match req.method() {
-        &HyperMethod::POST => Method::Post,
-        &HyperMethod::PUT => Method::Put,
-        &HyperMethod::GET => Method::Get,
-        &HyperMethod::DELETE => Method::Delete,
+    let method = match *req.method() {
+        HyperMethod::POST => Method::Post,
+        HyperMethod::PUT => Method::Put,
+        HyperMethod::GET => Method::Get,
+        HyperMethod::DELETE => Method::Delete,
         _ => return Ok(not_found()),
     };
     let whole_body = hyper::body::to_bytes(req.into_body()).await?;
@@ -74,6 +74,9 @@ async fn router(mocks: Mocks, req: Request<Body>) -> Result<Response<Body>, hype
                     )))
                 }
             };
+            if result == Value::Null {
+                return Ok(Response::builder().body(Body::empty()).unwrap());
+            }
             return Ok(Response::builder()
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(body))
@@ -171,14 +174,13 @@ mod tests {
         channel::{mpsc, oneshot},
         SinkExt, StreamExt,
     };
-    use hyper::Client;
     use serde_json::{json, Value};
     use tokio::{self, task};
 
     #[tokio::test]
     async fn capture_and_replay() {
-        let file_path = "testingTemp/test.json";
-        let client = Client::new();
+        let file_path = "/tmp/test.json";
+        let client = reqwest::Client::new();
         let body_one: Value = {
             let mock = MockServer::new()
                 .await
@@ -190,12 +192,8 @@ mod tests {
                 .await;
             let url = format!("http://{}/facts", mock.address);
 
-            let res = client
-                .get(url.parse().expect("valid url"))
-                .await
-                .expect("Valid get");
-            serde_json::from_slice(&hyper::body::to_bytes(res).await.expect("as bytes"))
-                .expect("Serde")
+            let res = client.get(&url).send().await.expect("Valid get");
+            res.json().await.expect("Serde")
         };
 
         assert_ne!(body_one, json!(null));
@@ -206,13 +204,8 @@ mod tests {
                 .mock(ReplayMock::from_file(file_path))
                 .await;
             let url = format!("http://{}/facts", mock.address);
-
-            let res = client
-                .get(url.parse().expect("valid url"))
-                .await
-                .expect("Valid get");
-            serde_json::from_slice(&hyper::body::to_bytes(res).await.expect("as bytes"))
-                .expect("Serde")
+            let res = client.get(&url).send().await.expect("Valid get");
+            res.json().await.expect("Serde")
         };
 
         assert_eq!(body_one, body_two);
@@ -226,17 +219,11 @@ mod tests {
             .mock(ClosureMock::new(|_req| async { Some(json!("Good")) }))
             .await;
         let url = format!("http://{}/facts", mock.address);
+        let client = reqwest::Client::new();
 
-        let client = Client::new();
+        let res = client.get(&url).send().await.expect("Valid get");
 
-        let res = client
-            .get(url.parse().expect("valid url"))
-            .await
-            .expect("Valid get");
-
-        let body_one: Value =
-            serde_json::from_slice(&hyper::body::to_bytes(res).await.expect("as bytes"))
-                .expect("Serde");
+        let body_one: Value = res.json().await.expect("Serde");
 
         assert_eq!(body_one, json!("Good"));
     }
@@ -273,37 +260,37 @@ mod tests {
                 }
             }))
             .await;
-        let address = mock.address.clone();
+        let address = mock.address;
         let body_one = task::spawn(async move {
             let url = format!("http://{}/one", address);
 
-            let client = Client::new();
+            let client = reqwest::Client::new();
 
-            let res = client
-                .get(url.parse().expect("valid url"))
+            let body: Value = client
+                .get(&url)
+                .send()
                 .await
-                .expect("Valid get");
-            let body: Value =
-                serde_json::from_slice(&hyper::body::to_bytes(res).await.expect("as bytes"))
-                    .expect("Serde");
+                .expect("get")
+                .json()
+                .await
+                .expect("json");
 
             assert_eq!(body, json!("one"));
             Instant::now()
         });
-        let address = mock.address.clone();
         let body_two = task::spawn(async move {
             let url = format!("http://{}/two", address);
 
-            let client = Client::new();
+            let client = reqwest::Client::new();
 
-            let res = client
-                .get(url.parse().expect("valid url"))
+            let body: Value = client
+                .get(&url)
+                .send()
                 .await
-                .expect("Valid get");
-
-            let body: Value =
-                serde_json::from_slice(&hyper::body::to_bytes(res).await.expect("as bytes"))
-                    .expect("Serde");
+                .expect("get")
+                .json()
+                .await
+                .expect("json");
 
             assert_eq!(body, json!("two"));
             Instant::now()
@@ -311,7 +298,8 @@ mod tests {
 
         rec_two.next().await.unwrap().send(json!("two")).unwrap();
         rec_one.next().await.unwrap().send(json!("one")).unwrap();
-
-        assert!(body_one.await.unwrap() > body_two.await.unwrap());
+        let body_one = body_one.await.unwrap();
+        let body_two = body_two.await.unwrap();
+        assert!(body_one > body_two);
     }
 }

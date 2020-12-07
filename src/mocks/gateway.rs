@@ -1,11 +1,10 @@
 use std::{fs::File, io::Write, sync::Mutex};
 
 use async_trait::async_trait;
-use bytes::buf::BufExt;
-use hyper::{header, Body, Client};
 use serde_json::Value;
+use tracing::warn;
 
-use crate::models::{Replay, Request};
+use crate::models::{Method, Replay, Request};
 
 use super::RunMock;
 
@@ -42,37 +41,40 @@ impl Gateway {
 impl RunMock for Gateway {
     async fn run_mock(&self, request: &Request) -> Option<Value> {
         let path = request.path.strip_prefix(&self.path)?;
-        let https = hyper_rustls::HttpsConnector::new();
 
-        let client = Client::builder().build(https);
-
-        let uri: hyper::Uri = format!("{}{}", self.uri, path).parse().ok()?;
-        let body = serde_json::to_string(&request.body).ok()?;
-        let method: hyper::Method = request.method.as_method_string().parse().ok()?;
-
-        let res = client
-            .request(
-                hyper::Request::builder()
-                    .method(method)
-                    .header(header::CONTENT_TYPE, "application/body")
-                    .uri(uri)
-                    .body(Body::from(body))
-                    .expect("request builder"),
-            )
+        let uri = format!("{}{}", self.uri, path);
+        let client = reqwest::Client::new();
+        let response = match request.method {
+            Method::Post => client.post(&uri),
+            Method::Put => client.put(&uri),
+            Method::Get => client.get(&uri),
+            Method::Delete => client.delete(&uri),
+        };
+        let response = dbg!(
+            match &request.body {
+                &Value::Null => response,
+                body => response.json(body),
+            }
+            .send()
             .await
-            .ok()?;
+        )
+        .ok()?;
 
-        let body = hyper::body::aggregate(res).await.ok()?;
-        let body: Value = serde_json::from_reader(body.reader()).ok()?;
+        // And then, if the request gets a response...
+        if response.status() != 200 {
+            warn!("Error status: {}", response.status());
+            return None;
+        }
+        let response_body: Value = response.json().await.ok()?;
         {
             let mut replays = self.replays.lock().ok()?;
             replays.push(Replay {
                 when: request.clone(),
-                then: body.clone(),
+                then: response_body.clone(),
             });
         }
 
-        Some(body)
+        Some(response_body)
     }
 }
 

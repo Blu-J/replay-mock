@@ -19,7 +19,7 @@ impl<T: Future<Output = Option<Value>> + Sync + Send, F: Fn(Request) -> T + Sync
 {
     ///
     pub fn new(closure: F) -> Box<ClosureMock<T, F>> {
-        Box::new(Self { closure: closure })
+        Box::new(Self { closure })
     }
 }
 #[async_trait]
