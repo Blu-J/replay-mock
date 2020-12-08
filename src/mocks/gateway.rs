@@ -49,15 +49,16 @@ impl RunMock for Gateway {
             Method::Put => client.put(&uri),
             Method::Get => client.get(&uri),
             Method::Delete => client.delete(&uri),
+            Method::Head => client.head(&uri),
+            Method::Patch => client.patch(&uri),
+            Method::Trace | Method::Connect | Method::Options | Method::Other => return None,
         };
-        let response = dbg!(
-            match &request.body {
-                &Value::Null => response,
-                body => response.json(body),
-            }
-            .send()
-            .await
-        )
+        let response = match &request.body {
+            &None => response,
+            body => response.json(body),
+        }
+        .send()
+        .await
         .ok()?;
 
         // And then, if the request gets a response...

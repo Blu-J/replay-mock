@@ -5,14 +5,10 @@ use std::{mem::replace, net::SocketAddr, sync::Arc};
 
 use futures::channel::oneshot;
 use futures::lock::Mutex;
-pub use hyper;
-use hyper::{
-    header, http,
-    service::{make_service_fn, service_fn},
-};
-use hyper::{Body, Method as HyperMethod, Request, Response, Server, StatusCode};
 use models::Method;
 use serde_json::Value;
+use tracing::warn;
+use warp::{filters, Filter};
 
 /// Mocks are the ways that we can create route mocking
 /// There are usefull tools like gateway, which is a proxy
@@ -26,6 +22,12 @@ type RunMock = Box<dyn mocks::RunMock + Send + Sync>;
 
 type Mocks = Arc<Mutex<Vec<Arc<RunMock>>>>;
 
+#[derive(Debug, Clone)]
+enum ResultType {
+    Ok { value: Value },
+    NotFound,
+}
+
 /// Mock Server is the main piece, this will start a server on a random port
 /// and we can get the port and url. We then can modify behaviour with the mocks.
 pub struct MockServer {
@@ -34,78 +36,17 @@ pub struct MockServer {
     pub address: SocketAddr,
     kill: Option<oneshot::Sender<()>>,
 }
-async fn router(mocks: Mocks, req: Request<Body>) -> Result<Response<Body>, hyper::Error> {
-    let path = match req.uri().path_and_query() {
-        Some(path_query) => format!("{}", path_query),
-        _ => return Ok(not_found()),
-    };
-    let method = match *req.method() {
-        HyperMethod::POST => Method::Post,
-        HyperMethod::PUT => Method::Put,
-        HyperMethod::GET => Method::Get,
-        HyperMethod::DELETE => Method::Delete,
-        _ => return Ok(not_found()),
-    };
-    let whole_body = hyper::body::to_bytes(req.into_body()).await?;
-    let body = if whole_body.is_empty() {
-        Value::Null
-    } else {
-        match serde_json::from_slice(&whole_body) {
-            Ok(body) => body,
-            Err(_err) => {
-                return Ok(bad_request(format!(
-                    "Can't parse {:?} as valid json",
-                    whole_body
-                )))
-            }
-        }
-    };
+async fn router(mocks: Mocks, path: String, method: Method, body: Option<Value>) -> ResultType {
+    println!("In Router");
     let request = models::Request { method, path, body };
     let mocks = mocks.lock().await.clone();
     for mock in mocks.iter() {
         let mock_result = mock.run_mock(&request).await;
-        if let Some(result) = mock_result {
-            let body = match serde_json::to_string(&result) {
-                Ok(a) => a,
-                Err(_err) => {
-                    return Ok(internal_error(format!(
-                        "Can't convert {:?} into bytes",
-                        result
-                    )))
-                }
-            };
-            if result == Value::Null {
-                return Ok(Response::builder().body(Body::empty()).unwrap());
-            }
-            return Ok(Response::builder()
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(body))
-                .unwrap());
+        if let Some(value) = mock_result {
+            return ResultType::Ok { value };
         }
     }
-    Ok(not_found())
-}
-
-fn not_found() -> Response<Body> {
-    let mut not_found = Response::default();
-    *not_found.status_mut() = StatusCode::NOT_FOUND;
-    not_found
-}
-fn bad_request(message: String) -> Response<Body> {
-    let body = serde_json::to_string(&message).unwrap();
-    Response::builder()
-        .header(header::CONTENT_TYPE, "application/json")
-        .status(http::StatusCode::BAD_REQUEST)
-        .body(Body::from(body))
-        .unwrap()
-}
-fn internal_error(message: String) -> Response<Body> {
-    let body = serde_json::to_string(&message).unwrap();
-    Response::builder()
-        .header(header::CONTENT_TYPE, "application/json")
-        .status(http::StatusCode::INTERNAL_SERVER_ERROR)
-        .body(Body::from(body))
-        .unwrap()
+    ResultType::NotFound
 }
 
 impl Drop for MockServer {
@@ -114,8 +55,61 @@ impl Drop for MockServer {
         if let Some(kill) = kill {
             kill.send(())
                 .expect("Sending kill signal for cleanup of mock server");
+            // self.server_task.
         }
     }
+}
+
+fn with_sendable<V: Clone + Send + Sync>(
+    value: V,
+) -> impl Filter<Extract = (V,), Error = std::convert::Infallible> + Clone {
+    warp::any().map(move || value.clone())
+}
+async fn route(
+    mocks: Mocks,
+    path: warp::filters::path::FullPath,
+    body: Option<Value>,
+    method: warp::http::Method,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    let method: Method = match method {
+        warp::http::Method::OPTIONS => Method::Options,
+        warp::http::Method::PATCH => Method::Patch,
+        warp::http::Method::POST => Method::Post,
+        warp::http::Method::PUT => Method::Put,
+        warp::http::Method::TRACE => Method::Trace,
+        warp::http::Method::HEAD => Method::Head,
+        warp::http::Method::GET => Method::Get,
+        warp::http::Method::DELETE => Method::Delete,
+        warp::http::Method::CONNECT => Method::Connect,
+        _ => Method::Other,
+    };
+    let path = path.as_str();
+    let routed = router(mocks, path.to_string(), method, body.clone()).await;
+    match routed {
+        ResultType::Ok { value } => Ok(warp::reply::json(&value)),
+        ResultType::NotFound => {
+            warn!(
+                "\"Can't find route {:?}@{} with body {:?} \"",
+                method, path, body,
+            );
+            Err(warp::reject::not_found())
+        }
+    }
+}
+async fn body_route(
+    mocks: Mocks,
+    path: warp::filters::path::FullPath,
+    body: Value,
+    method: warp::http::Method,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    route(mocks, path, Some(body), method).await
+}
+async fn no_body_route(
+    mocks: Mocks,
+    path: warp::filters::path::FullPath,
+    method: warp::http::Method,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    route(mocks, path, None, method).await
 }
 
 impl MockServer {
@@ -125,31 +119,26 @@ impl MockServer {
         let mocks: Mocks = Default::default();
 
         let service = {
-            let mocks = mocks.clone();
-            make_service_fn(move |_| {
-                let mocks = mocks.clone();
-                async move {
-                    Ok::<_, hyper::Error>(service_fn(move |req| {
-                        let mocks = mocks.clone();
-                        async move { router(mocks, req).await }
-                    }))
-                }
-            })
+            with_sendable(mocks.clone())
+                .and(filters::path::full())
+                .and(filters::body::json())
+                .and(filters::method::method())
+                .and_then(body_route)
+                .or(with_sendable(mocks.clone())
+                    .and(filters::path::full())
+                    .and(filters::method::method())
+                    .and_then(no_body_route))
         };
-
-        let (send_address, address_receiver) = oneshot::channel();
         let (s, r) = oneshot::channel();
-        tokio::spawn(async move {
-            let server = Server::bind(&addr).serve(service);
-            send_address.send(server.local_addr()).unwrap();
-            server
-                .with_graceful_shutdown(async { r.await.unwrap() })
-                .await
-                .expect("Running server");
+
+        let (address, server) = warp::serve(service).bind_with_graceful_shutdown(addr, async {
+            r.await.unwrap();
         });
+        tokio::spawn(server);
+        println!("Starting server on {}", address);
         MockServer {
             mocks,
-            address: address_receiver.await.unwrap(),
+            address,
             kill: Some(s),
         }
     }
@@ -179,7 +168,7 @@ mod tests {
 
     #[tokio::test]
     async fn capture_and_replay() {
-        let file_path = "/tmp/test.json";
+        let file_path = "testingTemp/test.json";
         let client = reqwest::Client::new();
         let body_one: Value = {
             let mock = MockServer::new()
@@ -197,6 +186,7 @@ mod tests {
         };
 
         assert_ne!(body_one, json!(null));
+        task::yield_now().await;
 
         let body_two: Value = {
             let mock = MockServer::new()

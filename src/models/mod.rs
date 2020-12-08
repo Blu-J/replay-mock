@@ -12,6 +12,18 @@ pub enum Method {
     Get,
     ///REST Delete
     Delete,
+    ///REST Trace
+    Trace,
+    ///REST HEAD
+    Head,
+    ///REST Connect
+    Connect,
+    ///REST patch
+    Patch,
+    ///REST OPTIONS
+    Options,
+    ///
+    Other,
 }
 
 impl Method {
@@ -22,6 +34,12 @@ impl Method {
             Method::Put => "PUT".to_string(),
             Method::Get => "GET".to_string(),
             Method::Delete => "DELETE".to_string(),
+            Method::Trace => "TRACE".to_string(),
+            Method::Head => "HEAD".to_string(),
+            Method::Connect => "CONNECT".to_string(),
+            Method::Patch => "PATCH".to_string(),
+            Method::Options => "OPTIONS".to_string(),
+            Method::Other => unimplemented!("Unknown method type"),
         }
     }
 }
@@ -33,7 +51,7 @@ pub struct Request {
     ///
     pub method: Method,
     ///
-    pub body: Value,
+    pub body: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
