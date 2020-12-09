@@ -43,7 +43,16 @@ impl RunMock for Gateway {
         let path = request.path.strip_prefix(&self.path)?;
         println!("{:?}", request);
 
-        let uri = format!("{}{}", self.uri, path);
+        let uri = format!(
+            "{}{}{}",
+            self.uri,
+            path,
+            request
+                .queries
+                .clone()
+                .map(|x| format!("?{}", x))
+                .unwrap_or_default()
+        );
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(60 * 5))
             .build()
@@ -61,10 +70,9 @@ impl RunMock for Gateway {
         let response = match &request.body {
             &None => response,
             body => response.json(body),
-        }
-        .send()
-        .await
-        .ok()?;
+        };
+
+        let response = response.send().await.ok()?;
         println!("response {:?}", response);
         // And then, if the request gets a response...
         if response.status() != 200 {
