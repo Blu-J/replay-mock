@@ -1,4 +1,4 @@
-use std::{fs::File, io::Write, sync::Mutex};
+use std::{fs::File, io::Write, sync::Mutex, time::Duration};
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -41,9 +41,13 @@ impl Gateway {
 impl RunMock for Gateway {
     async fn run_mock(&self, request: &Request) -> Option<Value> {
         let path = request.path.strip_prefix(&self.path)?;
+        println!("{:?}", request);
 
         let uri = format!("{}{}", self.uri, path);
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(60 * 5))
+            .build()
+            .ok()?;
         let response = match request.method {
             Method::Post => client.post(&uri),
             Method::Put => client.put(&uri),
@@ -52,7 +56,8 @@ impl RunMock for Gateway {
             Method::Head => client.head(&uri),
             Method::Patch => client.patch(&uri),
             Method::Trace | Method::Connect | Method::Options | Method::Other => return None,
-        };
+        }
+        .header("content-type", "application/json");
         let response = match &request.body {
             &None => response,
             body => response.json(body),
@@ -60,7 +65,7 @@ impl RunMock for Gateway {
         .send()
         .await
         .ok()?;
-
+        println!("response {:?}", response);
         // And then, if the request gets a response...
         if response.status() != 200 {
             warn!("Error status: {}", response.status());

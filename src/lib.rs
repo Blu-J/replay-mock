@@ -1,4 +1,4 @@
-#![deny(missing_docs, warnings)]
+#![deny(missing_docs)]
 //! ### Purpose
 //! We want to to capture a proxy, and replay, and even pass it through if needed.
 use std::{mem::replace, net::SocketAddr, sync::Arc};
@@ -36,9 +36,20 @@ pub struct MockServer {
     pub address: SocketAddr,
     kill: Option<oneshot::Sender<()>>,
 }
-async fn router(mocks: Mocks, path: String, method: Method, body: Option<Value>) -> ResultType {
+async fn router(
+    mocks: Mocks,
+    path: String,
+    queries: Option<String>,
+    method: Method,
+    body: Option<Value>,
+) -> ResultType {
     println!("In Router");
-    let request = models::Request { method, path, body };
+    let request = models::Request {
+        method,
+        queries,
+        path,
+        body,
+    };
     let mocks = mocks.lock().await.clone();
     for mock in mocks.iter() {
         let mock_result = mock.run_mock(&request).await;
@@ -68,6 +79,7 @@ fn with_sendable<V: Clone + Send + Sync>(
 async fn route(
     mocks: Mocks,
     path: warp::filters::path::FullPath,
+    queries: Option<String>,
     body: Option<Value>,
     method: warp::http::Method,
 ) -> Result<impl warp::Reply, warp::Rejection> {
@@ -84,7 +96,7 @@ async fn route(
         _ => Method::Other,
     };
     let path = path.as_str();
-    let routed = router(mocks, path.to_string(), method, body.clone()).await;
+    let routed = router(mocks, path.to_string(), queries, method, body.clone()).await;
     match routed {
         ResultType::Ok { value } => Ok(warp::reply::json(&value)),
         ResultType::NotFound => {
@@ -99,17 +111,34 @@ async fn route(
 async fn body_route(
     mocks: Mocks,
     path: warp::filters::path::FullPath,
+    queries: String,
     body: Value,
     method: warp::http::Method,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    route(mocks, path, Some(body), method).await
+    route(mocks, path, Some(queries), Some(body), method).await
+}
+async fn body_route_no_queries(
+    mocks: Mocks,
+    path: warp::filters::path::FullPath,
+    body: Value,
+    method: warp::http::Method,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    route(mocks, path, None, Some(body), method).await
 }
 async fn no_body_route(
     mocks: Mocks,
     path: warp::filters::path::FullPath,
+    queries: String,
     method: warp::http::Method,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    route(mocks, path, None, method).await
+    route(mocks, path, Some(queries), None, method).await
+}
+async fn no_body_route_no_queries(
+    mocks: Mocks,
+    path: warp::filters::path::FullPath,
+    method: warp::http::Method,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    route(mocks, path, None, None, method).await
 }
 
 impl MockServer {
@@ -121,13 +150,24 @@ impl MockServer {
         let service = {
             with_sendable(mocks.clone())
                 .and(filters::path::full())
+                .and(filters::query::raw())
                 .and(filters::body::json())
                 .and(filters::method::method())
                 .and_then(body_route)
                 .or(with_sendable(mocks.clone())
                     .and(filters::path::full())
+                    .and(filters::query::raw())
                     .and(filters::method::method())
                     .and_then(no_body_route))
+                .or(with_sendable(mocks.clone())
+                    .and(filters::path::full())
+                    .and(filters::body::json())
+                    .and(filters::method::method())
+                    .and_then(body_route_no_queries))
+                .or(with_sendable(mocks.clone())
+                    .and(filters::path::full())
+                    .and(filters::method::method())
+                    .and_then(no_body_route_no_queries))
         };
         let (s, r) = oneshot::channel();
 
@@ -152,7 +192,9 @@ impl MockServer {
 
 #[cfg(test)]
 mod tests {
+    use core::time::Duration;
     use std::{fs::remove_file, time::Instant};
+    use tokio::time::timeout;
 
     use crate::{
         mocks::Gateway,
@@ -258,6 +300,7 @@ mod tests {
 
             let body: Value = client
                 .get(&url)
+                .timeout(Duration::from_millis(100))
                 .send()
                 .await
                 .expect("get")
@@ -275,6 +318,7 @@ mod tests {
 
             let body: Value = client
                 .get(&url)
+                .timeout(Duration::from_millis(100))
                 .send()
                 .await
                 .expect("get")
@@ -286,8 +330,19 @@ mod tests {
             Instant::now()
         });
 
-        rec_two.next().await.unwrap().send(json!("two")).unwrap();
-        rec_one.next().await.unwrap().send(json!("one")).unwrap();
+        timeout(Duration::from_millis(100), rec_two.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .send(json!("two"))
+            .unwrap();
+
+        timeout(Duration::from_millis(100), rec_one.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .send(json!("one"))
+            .unwrap();
         let body_one = body_one.await.unwrap();
         let body_two = body_two.await.unwrap();
         assert!(body_one > body_two);

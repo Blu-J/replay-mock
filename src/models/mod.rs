@@ -46,8 +46,10 @@ impl Method {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 /// A request is the simplified abstracted structure of a json rest
 pub struct Request {
-    /// Path and queries in the request
+    /// Path in the request
     pub path: String,
+    /// queries in the request
+    pub queries: Option<String>,
     ///
     pub method: Method,
     ///
