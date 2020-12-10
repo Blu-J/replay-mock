@@ -43,7 +43,6 @@ async fn router(
     method: Method,
     body: Option<Value>,
 ) -> ResultType {
-    println!("In Router");
     let request = models::Request {
         method,
         queries,
