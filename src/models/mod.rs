@@ -1,3 +1,4 @@
+use assert_json_diff::{CompareMode, Config};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -72,6 +73,11 @@ impl Replay {
         self.when.path == request.path
             && self.when.method == request.method
             && self.when.queries == request.queries
-            && assert_json_diff::assert_json_include_no_panic(&request.body, &self.when.body).is_ok()
+            && assert_json_diff::assert_json_matches_no_panic(
+                &request.body,
+                &self.when.body,
+                Config::new(CompareMode::Inclusive),
+            )
+            .is_ok()
     }
 }

@@ -3,10 +3,9 @@
 //! We want to to capture a proxy, and replay, and even pass it through if needed.
 use std::{mem::replace, net::SocketAddr, sync::Arc};
 
-use futures::channel::oneshot;
-use futures::lock::Mutex;
 use models::Method;
 use serde_json::Value;
+use tokio::sync::{oneshot, Mutex};
 use tracing::warn;
 use warp::{filters, Filter};
 
@@ -193,16 +192,15 @@ impl MockServer {
 mod tests {
     use core::time::Duration;
     use std::{fs::remove_file, time::Instant};
-    use tokio::time::timeout;
+    use tokio::{
+        sync::{mpsc, oneshot},
+        time::timeout,
+    };
 
     use crate::{
         mocks::Gateway,
         mocks::{ClosureMock, FactoryClosure, ReplayMock},
         MockServer,
-    };
-    use futures::{
-        channel::{mpsc, oneshot},
-        SinkExt, StreamExt,
     };
     use serde_json::{json, Value};
     use tokio::{self, task};
@@ -266,7 +264,7 @@ mod tests {
         let mock = MockServer::new()
             .await
             .mock(FactoryClosure::new(move || {
-                let mut send_one = send_one.clone();
+                let send_one = send_one.clone();
                 |req| async move {
                     if &req.path == "/one" {
                         let (send, rec) = oneshot::channel::<Value>();
@@ -279,7 +277,7 @@ mod tests {
             }))
             .await
             .mock(FactoryClosure::new(move || {
-                let mut send_two = send_two.clone();
+                let send_two = send_two.clone();
                 |req| async move {
                     if &req.path == "/two" {
                         let (send, rec) = oneshot::channel::<Value>();
@@ -329,14 +327,14 @@ mod tests {
             Instant::now()
         });
 
-        timeout(Duration::from_millis(100), rec_two.next())
+        timeout(Duration::from_millis(100), rec_two.recv())
             .await
             .unwrap()
             .unwrap()
             .send(json!("two"))
             .unwrap();
 
-        timeout(Duration::from_millis(100), rec_one.next())
+        timeout(Duration::from_millis(100), rec_one.recv())
             .await
             .unwrap()
             .unwrap()

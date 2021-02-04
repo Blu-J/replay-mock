@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use futures::Future;
+use core::future::Future;
 use serde_json::Value;
 
 use crate::models::Request;

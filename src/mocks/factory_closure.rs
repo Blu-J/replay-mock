@@ -1,8 +1,8 @@
 use async_trait::async_trait;
-use futures::Future;
 use serde_json::Value;
 
 use crate::models::Request;
+use core::future::Future;
 
 use super::RunMock;
 
