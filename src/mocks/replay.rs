@@ -1,9 +1,8 @@
 use std::fs::File;
 
 use async_trait::async_trait;
-use serde_json::Value;
 
-use crate::models::{Replay, Request};
+use crate::models::{DynamicBody, Replay, Request};
 
 use super::RunMock;
 
@@ -26,7 +25,7 @@ impl ReplayMock {
 }
 #[async_trait]
 impl RunMock for ReplayMock {
-    async fn run_mock(&self, request: &Request) -> Option<Value> {
+    async fn run_mock(&self, request: &Request) -> Option<DynamicBody> {
         for replay in self.replays.iter() {
             if replay.matches_request(request) {
                 return Some(replay.then.clone());

@@ -3,7 +3,7 @@
 //! We want to to capture a proxy, and replay, and even pass it through if needed.
 use std::{mem::replace, net::SocketAddr, sync::Arc};
 
-use models::Method;
+use models::{DynamicBody, Method};
 use serde_json::Value;
 use tokio::sync::{oneshot, Mutex};
 use tracing::warn;
@@ -23,7 +23,7 @@ type Mocks = Arc<Mutex<Vec<Arc<RunMock>>>>;
 
 #[derive(Debug, Clone)]
 enum ResultType {
-    Ok { value: Value },
+    Ok { value: DynamicBody },
     NotFound,
 }
 
@@ -40,7 +40,7 @@ async fn router(
     path: String,
     queries: Option<String>,
     method: Method,
-    body: Option<Value>,
+    body: Option<DynamicBody>,
 ) -> ResultType {
     let request = models::Request {
         method,
@@ -78,9 +78,9 @@ async fn route(
     mocks: Mocks,
     path: warp::filters::path::FullPath,
     queries: Option<String>,
-    body: Option<Value>,
+    body: Option<DynamicBody>,
     method: warp::http::Method,
-) -> Result<impl warp::Reply, warp::Rejection> {
+) -> Result<Box<dyn warp::Reply>, warp::Rejection> {
     let method: Method = match method {
         warp::http::Method::OPTIONS => Method::Options,
         warp::http::Method::PATCH => Method::Patch,
@@ -96,7 +96,15 @@ async fn route(
     let path = path.as_str();
     let routed = router(mocks, path.to_string(), queries, method, body.clone()).await;
     match routed {
-        ResultType::Ok { value } => Ok(warp::reply::json(&value)),
+        ResultType::Ok {
+            value: DynamicBody::Json(value),
+        } => Ok(Box::new(warp::reply::json(&value))),
+        ResultType::Ok {
+            value: DynamicBody::Text(text),
+        } => Ok(Box::new(warp::hyper::Response::builder().body(text))),
+        ResultType::Ok {
+            value: DynamicBody::Bytes(bytes),
+        } => Ok(Box::new(warp::hyper::Response::builder().body(bytes))),
         ResultType::NotFound => {
             warn!(
                 "\"Can't find route {:?}@{} with body {:?} \"",
@@ -106,22 +114,45 @@ async fn route(
         }
     }
 }
-async fn body_route(
+async fn json_body_route(
     mocks: Mocks,
     path: warp::filters::path::FullPath,
     queries: String,
     body: Value,
     method: warp::http::Method,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    route(mocks, path, Some(queries), Some(body), method).await
+    route(
+        mocks,
+        path,
+        Some(queries),
+        Some(DynamicBody::Json(body)),
+        method,
+    )
+    .await
 }
-async fn body_route_no_queries(
+async fn bytes_body_route(
+    mocks: Mocks,
+    path: warp::filters::path::FullPath,
+    queries: String,
+    body: bytes::Bytes,
+    method: warp::http::Method,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    route(
+        mocks,
+        path,
+        Some(queries),
+        Some(DynamicBody::Bytes(body.into_iter().collect())),
+        method,
+    )
+    .await
+}
+async fn json_body_route_no_queries(
     mocks: Mocks,
     path: warp::filters::path::FullPath,
     body: Value,
     method: warp::http::Method,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    route(mocks, path, None, Some(body), method).await
+    route(mocks, path, None, Some(DynamicBody::Json(body)), method).await
 }
 async fn no_body_route(
     mocks: Mocks,
@@ -151,7 +182,13 @@ impl MockServer {
                 .and(filters::query::raw())
                 .and(filters::body::json())
                 .and(filters::method::method())
-                .and_then(body_route)
+                .and_then(json_body_route)
+                .or(with_sendable(mocks.clone())
+                    .and(filters::path::full())
+                    .and(filters::query::raw())
+                    .and(filters::body::bytes())
+                    .and(filters::method::method())
+                    .and_then(bytes_body_route))
                 .or(with_sendable(mocks.clone())
                     .and(filters::path::full())
                     .and(filters::query::raw())
@@ -161,7 +198,7 @@ impl MockServer {
                     .and(filters::path::full())
                     .and(filters::body::json())
                     .and(filters::method::method())
-                    .and_then(body_route_no_queries))
+                    .and_then(json_body_route_no_queries))
                 .or(with_sendable(mocks.clone())
                     .and(filters::path::full())
                     .and(filters::method::method())
@@ -190,6 +227,7 @@ impl MockServer {
 
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
     use core::time::Duration;
     use std::{fs::remove_file, time::Instant};
     use tokio::{
@@ -214,11 +252,11 @@ mod tests {
                 .await
                 .mock(Gateway::new_replay(
                     "",
-                    "https://cat-fact.herokuapp.com",
+                    "https://jsonplaceholder.typicode.com",
                     file_path,
                 ))
                 .await;
-            let url = format!("http://{}/facts", mock.address);
+            let url = format!("http://{}/todos/1", mock.address);
 
             let res = client.get(&url).send().await.expect("Valid get");
             res.json().await.expect("Serde")
@@ -232,9 +270,81 @@ mod tests {
                 .await
                 .mock(ReplayMock::from_file(file_path))
                 .await;
-            let url = format!("http://{}/facts", mock.address);
+            let url = format!("http://{}/todos/1", mock.address);
             let res = client.get(&url).send().await.expect("Valid get");
             res.json().await.expect("Serde")
+        };
+
+        assert_eq!(body_one, body_two);
+        remove_file(file_path).expect("Remove the file for the testing");
+    }
+
+    #[tokio::test]
+    async fn capture_and_replay_image() {
+        let file_path = "testingTemp/test_image.json";
+        let client = reqwest::Client::new();
+        let body_one: Bytes = {
+            let mock = MockServer::new()
+                .await
+                .mock(Gateway::new_replay(
+                    "",
+                    "https://live.staticflickr.com",
+                    file_path,
+                ))
+                .await;
+            let url = format!("http://{}/3903/15218475961_963a4c116e_n.jpg", mock.address);
+
+            let res = client.get(&url).send().await.expect("Valid get");
+            res.bytes().await.expect("Serde")
+        };
+
+        assert_ne!(body_one, vec![]);
+        task::yield_now().await;
+
+        let body_two: Bytes = {
+            let mock = MockServer::new()
+                .await
+                .mock(ReplayMock::from_file(file_path))
+                .await;
+            let url = format!("http://{}/3903/15218475961_963a4c116e_n.jpg", mock.address);
+            let res = client.get(&url).send().await.expect("Valid get");
+            res.bytes().await.expect("Serde")
+        };
+
+        assert_eq!(body_one, body_two);
+        remove_file(file_path).expect("Remove the file for the testing");
+    }
+
+    #[tokio::test]
+    async fn capture_and_replay_text_body() {
+        let file_path = "testingTemp/testText.json";
+        let client = reqwest::Client::new();
+        let body_one: String = {
+            let mock = MockServer::new()
+                .await
+                .mock(Gateway::new_replay(
+                    "",
+                    "https://en.wikipedia.org",
+                    file_path,
+                ))
+                .await;
+            let url = format!("http://{}/wiki/Game_replay", mock.address);
+
+            let res = client.get(&url).send().await.expect("Valid get");
+            dbg!(res.text().await.unwrap())
+        };
+
+        assert_ne!(&body_one, &"");
+        task::yield_now().await;
+
+        let body_two: String = {
+            let mock = MockServer::new()
+                .await
+                .mock(ReplayMock::from_file(file_path))
+                .await;
+            let url = format!("http://{}/wiki/Game_replay", mock.address);
+            let res = client.get(&url).send().await.expect("Valid get");
+            res.text().await.unwrap()
         };
 
         assert_eq!(body_one, body_two);

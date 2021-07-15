@@ -1,10 +1,9 @@
 use std::{fs::File, io::Write, sync::Mutex, time::Duration};
 
 use async_trait::async_trait;
-use serde_json::Value;
 use tracing::warn;
 
-use crate::models::{Method, Replay, Request};
+use crate::models::{DynamicBody, Method, Replay, Request};
 
 use super::RunMock;
 
@@ -39,7 +38,7 @@ impl Gateway {
 }
 #[async_trait]
 impl RunMock for Gateway {
-    async fn run_mock(&self, request: &Request) -> Option<Value> {
+    async fn run_mock(&self, request: &Request) -> Option<DynamicBody> {
         let path = request.path.strip_prefix(&self.path)?;
         println!("{:?}", request);
 
@@ -65,11 +64,14 @@ impl RunMock for Gateway {
             Method::Head => client.head(&uri),
             Method::Patch => client.patch(&uri),
             Method::Trace | Method::Connect | Method::Options | Method::Other => return None,
-        }
-        .header("content-type", "application/json");
+        };
         let response = match &request.body {
             &None => response,
-            body => response.json(body),
+            Some(DynamicBody::Text(body)) => response.body(body.clone()),
+            Some(DynamicBody::Bytes(body)) => response.body(body.clone()),
+            Some(DynamicBody::Json(body)) => response
+                .header("content-type", "application/json")
+                .json(&body),
         };
 
         let response = response.send().await.ok()?;
@@ -79,7 +81,16 @@ impl RunMock for Gateway {
             warn!("Error status: {}", response.status());
             return None;
         }
-        let response_body: Value = response.json().await.ok()?;
+        let body_bytes = response.bytes().await.ok()?;
+        let response_body: DynamicBody = if let Some(json) =
+            serde_json::from_slice(&body_bytes).ok()
+        {
+            DynamicBody::Json(json)
+        } else if let Some(body) = String::from_utf8(body_bytes.iter().cloned().collect()).ok() {
+            DynamicBody::Text(body)
+        } else {
+            DynamicBody::Bytes(body_bytes.into_iter().collect())
+        };
         {
             let mut replays = self.replays.lock().ok()?;
             replays.push(Replay {

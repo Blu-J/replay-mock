@@ -44,6 +44,28 @@ impl Method {
         }
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Request bodies could be a json or bytes
+pub enum DynamicBody {
+    /// This is the text bodies
+    Text(String),
+    /// This is the raw bodies
+    Bytes(Vec<u8>),
+    /// This is when we are doing json
+    Json(Value),
+}
+impl From<Value> for DynamicBody {
+    fn from(value: Value) -> Self {
+        DynamicBody::Json(value)
+    }
+}
+impl From<Vec<u8>> for DynamicBody {
+    fn from(value: Vec<u8>) -> Self {
+        DynamicBody::Bytes(value)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 /// A request is the simplified abstracted structure of a json rest
 pub struct Request {
@@ -54,7 +76,7 @@ pub struct Request {
     ///
     pub method: Method,
     ///
-    pub body: Option<Value>,
+    pub body: Option<DynamicBody>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -64,7 +86,7 @@ pub struct Replay {
     /// When a request condition happens
     pub when: Request,
     /// Return this value
-    pub then: Value,
+    pub then: DynamicBody,
 }
 
 impl Replay {

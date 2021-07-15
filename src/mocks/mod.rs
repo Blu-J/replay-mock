@@ -1,7 +1,6 @@
 use async_trait::async_trait;
-use serde_json::Value;
 
-use crate::models::Request;
+use crate::models::{DynamicBody, Request};
 mod closure;
 mod factory_closure;
 mod gateway;
@@ -16,5 +15,5 @@ pub use replay::*;
 /// When there is a value it expects that we are using this mock and stops here.
 pub trait RunMock {
     ///
-    async fn run_mock(&self, request: &Request) -> Option<Value>;
+    async fn run_mock(&self, request: &Request) -> Option<DynamicBody>;
 }
