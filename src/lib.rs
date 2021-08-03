@@ -227,6 +227,27 @@ impl MockServer {
         self.mocks.lock().unwrap().push(Arc::new(mock));
         self
     }
+
+    /// Use this to change the behaviour of the server, adding in a replay.
+    pub fn url(&self, path: &str) -> String {
+        format!("http://{}/{}", self.address, path)
+    }
+
+    /// Use this to change the behaviour of the server, filter out in a replay.
+    pub fn filter_remove_mock<Filter>(self, filter: Filter) -> Self
+    where
+        Filter: Fn(&Arc<RunMock>) -> bool,
+    {
+        {
+            let mut filters = self.mocks.lock().unwrap();
+            *filters = filters
+                .iter()
+                .map(|x| x.clone())
+                .filter(move |x| filter(x))
+                .collect::<Vec<_>>();
+        }
+        self
+    }
 }
 
 #[cfg(test)]
