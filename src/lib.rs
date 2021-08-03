@@ -1,11 +1,15 @@
 #![deny(missing_docs)]
 //! ### Purpose
 //! We want to to capture a proxy, and replay, and even pass it through if needed.
-use std::{mem::replace, net::SocketAddr, sync::Arc};
+use std::{
+    mem::replace,
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+};
 
 use models::{DynamicBody, Method};
 use serde_json::Value;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::oneshot;
 use tracing::warn;
 use warp::{filters, Filter};
 
@@ -48,7 +52,7 @@ async fn router(
         path,
         body,
     };
-    let mocks = mocks.lock().await.clone();
+    let mocks = mocks.lock().unwrap().clone();
     for mock in mocks.iter() {
         let mock_result = mock.run_mock(&request).await;
         if let Some(value) = mock_result {
@@ -172,7 +176,7 @@ async fn no_body_route_no_queries(
 
 impl MockServer {
     /// Notes: Creating a on a random port
-    pub async fn new() -> MockServer {
+    pub fn new() -> MockServer {
         let addr: SocketAddr = ([0, 0, 0, 0], 0).into();
         let mocks: Mocks = Default::default();
 
@@ -219,8 +223,8 @@ impl MockServer {
     }
 
     /// Use this to change the behaviour of the server, adding in a replay.
-    pub async fn mock(self, mock: RunMock) -> Self {
-        self.mocks.lock().await.push(Arc::new(mock));
+    pub fn mock(self, mock: RunMock) -> Self {
+        self.mocks.lock().unwrap().push(Arc::new(mock));
         self
     }
 }
@@ -248,14 +252,11 @@ mod tests {
         let file_path = "testingTemp/test.json";
         let client = reqwest::Client::new();
         let body_one: Value = {
-            let mock = MockServer::new()
-                .await
-                .mock(Gateway::new_replay(
-                    "",
-                    "https://jsonplaceholder.typicode.com",
-                    file_path,
-                ))
-                .await;
+            let mock = MockServer::new().mock(Gateway::new_replay(
+                "",
+                "https://jsonplaceholder.typicode.com",
+                file_path,
+            ));
             let url = format!("http://{}/todos/1", mock.address);
 
             let res = client.get(&url).send().await.expect("Valid get");
@@ -266,10 +267,7 @@ mod tests {
         task::yield_now().await;
 
         let body_two: Value = {
-            let mock = MockServer::new()
-                .await
-                .mock(ReplayMock::from_file(file_path))
-                .await;
+            let mock = MockServer::new().mock(ReplayMock::from_file(file_path));
             let url = format!("http://{}/todos/1", mock.address);
             let res = client.get(&url).send().await.expect("Valid get");
             res.json().await.expect("Serde")
@@ -284,14 +282,11 @@ mod tests {
         let file_path = "testingTemp/test_image.json";
         let client = reqwest::Client::new();
         let body_one: Bytes = {
-            let mock = MockServer::new()
-                .await
-                .mock(Gateway::new_replay(
-                    "",
-                    "https://live.staticflickr.com",
-                    file_path,
-                ))
-                .await;
+            let mock = MockServer::new().mock(Gateway::new_replay(
+                "",
+                "https://live.staticflickr.com",
+                file_path,
+            ));
             let url = format!("http://{}/3903/15218475961_963a4c116e_n.jpg", mock.address);
 
             let res = client.get(&url).send().await.expect("Valid get");
@@ -302,10 +297,7 @@ mod tests {
         task::yield_now().await;
 
         let body_two: Bytes = {
-            let mock = MockServer::new()
-                .await
-                .mock(ReplayMock::from_file(file_path))
-                .await;
+            let mock = MockServer::new().mock(ReplayMock::from_file(file_path));
             let url = format!("http://{}/3903/15218475961_963a4c116e_n.jpg", mock.address);
             let res = client.get(&url).send().await.expect("Valid get");
             res.bytes().await.expect("Serde")
@@ -320,14 +312,11 @@ mod tests {
         let file_path = "testingTemp/testText.json";
         let client = reqwest::Client::new();
         let body_one: String = {
-            let mock = MockServer::new()
-                .await
-                .mock(Gateway::new_replay(
-                    "",
-                    "https://en.wikipedia.org",
-                    file_path,
-                ))
-                .await;
+            let mock = MockServer::new().mock(Gateway::new_replay(
+                "",
+                "https://en.wikipedia.org",
+                file_path,
+            ));
             let url = format!("http://{}/wiki/Game_replay", mock.address);
 
             let res = client.get(&url).send().await.expect("Valid get");
@@ -338,10 +327,7 @@ mod tests {
         task::yield_now().await;
 
         let body_two: String = {
-            let mock = MockServer::new()
-                .await
-                .mock(ReplayMock::from_file(file_path))
-                .await;
+            let mock = MockServer::new().mock(ReplayMock::from_file(file_path));
             let url = format!("http://{}/wiki/Game_replay", mock.address);
             let res = client.get(&url).send().await.expect("Valid get");
             res.text().await.unwrap()
@@ -353,10 +339,7 @@ mod tests {
 
     #[tokio::test]
     async fn closure_test() {
-        let mock = MockServer::new()
-            .await
-            .mock(ClosureMock::new(|_req| async { Some(json!("Good")) }))
-            .await;
+        let mock = MockServer::new().mock(ClosureMock::new(|_req| async { Some(json!("Good")) }));
         let url = format!("http://{}/facts", mock.address);
         let client = reqwest::Client::new();
 
@@ -372,7 +355,6 @@ mod tests {
         let (send_one, mut rec_one) = mpsc::channel::<oneshot::Sender<Value>>(1);
         let (send_two, mut rec_two) = mpsc::channel::<oneshot::Sender<Value>>(1);
         let mock = MockServer::new()
-            .await
             .mock(FactoryClosure::new(move || {
                 let send_one = send_one.clone();
                 |req| async move {
@@ -385,7 +367,6 @@ mod tests {
                     None
                 }
             }))
-            .await
             .mock(FactoryClosure::new(move || {
                 let send_two = send_two.clone();
                 |req| async move {
@@ -397,8 +378,7 @@ mod tests {
                     }
                     None
                 }
-            }))
-            .await;
+            }));
         let address = mock.address;
         let body_one = task::spawn(async move {
             let url = format!("http://{}/one", address);
