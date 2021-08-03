@@ -92,12 +92,17 @@ pub struct Request {
 impl Request {
     /// We want to know when a Replay matches the request coming in
     pub fn matches_body(&self, body: &Value) -> bool {
-        assert_json_diff::assert_json_matches_no_panic(
-            &self.body,
-            &body,
-            Config::new(CompareMode::Inclusive),
-        )
-        .is_ok()
+        match &self.body {
+            Some(DynamicBody::Json(personal_body)) => {
+                assert_json_diff::assert_json_matches_no_panic(
+                    &personal_body,
+                    &body,
+                    Config::new(CompareMode::Inclusive),
+                )
+                .is_ok()
+            }
+            _ => false,
+        }
     }
 }
 
