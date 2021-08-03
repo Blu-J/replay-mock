@@ -79,6 +79,18 @@ pub struct Request {
     pub body: Option<DynamicBody>,
 }
 
+impl Request {
+    /// We want to know when a Replay matches the request coming in
+    pub fn matches_body(&self, body: &Value) -> bool {
+        assert_json_diff::assert_json_matches_no_panic(
+            &self.body,
+            &body,
+            Config::new(CompareMode::Inclusive),
+        )
+        .is_ok()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 /// Replay is the structure to tie a pattern of if you see this then do that
 /// This uses fuzzy typing on the request body.

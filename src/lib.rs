@@ -223,7 +223,7 @@ impl MockServer {
     }
 
     /// Use this to change the behaviour of the server, adding in a replay.
-    pub fn mock(self, mock: RunMock) -> Self {
+    pub fn with_mock(self, mock: RunMock) -> Self {
         self.mocks.lock().unwrap().push(Arc::new(mock));
         self
     }
@@ -273,7 +273,7 @@ mod tests {
         let file_path = "testingTemp/test.json";
         let client = reqwest::Client::new();
         let body_one: Value = {
-            let mock = MockServer::new().mock(Gateway::new_replay(
+            let mock = MockServer::new().with_mock(Gateway::new_replay(
                 "",
                 "https://jsonplaceholder.typicode.com",
                 file_path,
@@ -288,7 +288,7 @@ mod tests {
         task::yield_now().await;
 
         let body_two: Value = {
-            let mock = MockServer::new().mock(ReplayMock::from_file(file_path));
+            let mock = MockServer::new().with_mock(ReplayMock::from_file(file_path));
             let url = format!("http://{}/todos/1", mock.address);
             let res = client.get(&url).send().await.expect("Valid get");
             res.json().await.expect("Serde")
@@ -303,7 +303,7 @@ mod tests {
         let file_path = "testingTemp/test_image.json";
         let client = reqwest::Client::new();
         let body_one: Bytes = {
-            let mock = MockServer::new().mock(Gateway::new_replay(
+            let mock = MockServer::new().with_mock(Gateway::new_replay(
                 "",
                 "https://live.staticflickr.com",
                 file_path,
@@ -318,7 +318,7 @@ mod tests {
         task::yield_now().await;
 
         let body_two: Bytes = {
-            let mock = MockServer::new().mock(ReplayMock::from_file(file_path));
+            let mock = MockServer::new().with_mock(ReplayMock::from_file(file_path));
             let url = format!("http://{}/3903/15218475961_963a4c116e_n.jpg", mock.address);
             let res = client.get(&url).send().await.expect("Valid get");
             res.bytes().await.expect("Serde")
@@ -333,7 +333,7 @@ mod tests {
         let file_path = "testingTemp/testText.json";
         let client = reqwest::Client::new();
         let body_one: String = {
-            let mock = MockServer::new().mock(Gateway::new_replay(
+            let mock = MockServer::new().with_mock(Gateway::new_replay(
                 "",
                 "https://en.wikipedia.org",
                 file_path,
@@ -348,7 +348,7 @@ mod tests {
         task::yield_now().await;
 
         let body_two: String = {
-            let mock = MockServer::new().mock(ReplayMock::from_file(file_path));
+            let mock = MockServer::new().with_mock(ReplayMock::from_file(file_path));
             let url = format!("http://{}/wiki/Game_replay", mock.address);
             let res = client.get(&url).send().await.expect("Valid get");
             res.text().await.unwrap()
@@ -360,7 +360,8 @@ mod tests {
 
     #[tokio::test]
     async fn closure_test() {
-        let mock = MockServer::new().mock(ClosureMock::new(|_req| async { Some(json!("Good")) }));
+        let mock =
+            MockServer::new().with_mock(ClosureMock::new(|_req| async { Some(json!("Good")) }));
         let url = format!("http://{}/facts", mock.address);
         let client = reqwest::Client::new();
 
@@ -376,7 +377,7 @@ mod tests {
         let (send_one, mut rec_one) = mpsc::channel::<oneshot::Sender<Value>>(1);
         let (send_two, mut rec_two) = mpsc::channel::<oneshot::Sender<Value>>(1);
         let mock = MockServer::new()
-            .mock(FactoryClosure::new(move || {
+            .with_mock(FactoryClosure::new(move || {
                 let send_one = send_one.clone();
                 |req| async move {
                     if &req.path == "/one" {
@@ -388,7 +389,7 @@ mod tests {
                     None
                 }
             }))
-            .mock(FactoryClosure::new(move || {
+            .with_mock(FactoryClosure::new(move || {
                 let send_two = send_two.clone();
                 |req| async move {
                     if &req.path == "/two" {
