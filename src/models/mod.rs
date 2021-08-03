@@ -65,6 +65,11 @@ impl From<Vec<u8>> for DynamicBody {
         DynamicBody::Bytes(value)
     }
 }
+impl From<String> for DynamicBody {
+    fn from(value: String) -> Self {
+        DynamicBody::Text(value)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 /// A request is the simplified abstracted structure of a json rest
